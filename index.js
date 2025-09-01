@@ -142,6 +142,182 @@ const connectToGeminiSdk = async (callbacks) => {
 };
 
 /**
+ * Tool Calling (Function Declarations)
+ * These declarations enable the model to request structured tool calls.
+ */
+function buildFunctionTools() {
+  /** @type {Array<any>} */
+  const functionDeclarations = [];
+
+  functionDeclarations.push({
+    name: "fetch_menu_items",
+    description:
+      "Fetches menu items. Use cached data when available. Call only if cache is empty or for fresh data.",
+    parameters: { type: "OBJECT", properties: {}, required: [] },
+  });
+
+  functionDeclarations.push({
+    name: "getCustomerByPhone",
+    description:
+      "Get the customer details from the database by providing the customer phone number. Use after validating the user's phone.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        phone: {
+          type: "STRING",
+          description:
+            "The validated 11-digit phone number (digits only). If missing, fallback to TEMP_PHONE_NUMBER env if set.",
+        },
+      },
+      required: ["phone"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "CreateOrder",
+    description:
+      "Create order after customer confirms. Required: customer.customerID, orderDetails[{menuItemid, quantity, price}], totalAmount. Status='Pending', paymentMethod='Cash'",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        payload: {
+          type: "OBJECT",
+          description:
+            "Order payload: {customer: {customerID}, orderDetails: [{menuItemid, quantity, price}], totalAmount, paymentMethod?, orderComments?}",
+        },
+      },
+      required: ["payload"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "GetOrderByCustomerId",
+    description:
+      "Fetch all order details for a given customer ID. Use this when the user asks about their current or past orders.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        customer_id: { type: "NUMBER", description: "The unique identifier of the customer." },
+      },
+      required: ["customer_id"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "GetExtras",
+    description:
+      "Fetch all available extras offered by the restaurant. Use this whenever asked about extras or add-ons.",
+    parameters: { type: "OBJECT", properties: {}, required: [] },
+  });
+
+  functionDeclarations.push({
+    name: "UpdateOrderStatus",
+    description:
+      "Update the status and/or comments of an existing order. Status must be one of 'Pending', 'Completed', 'Cancelled'.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        orderId: { type: "NUMBER", description: "The unique identifier of the order." },
+        status: {
+          type: "STRING",
+          description: "The new status of the order ('Pending' | 'Completed' | 'Cancelled').",
+        },
+        orderComments: { type: "STRING", description: "Updated comments for the order (optional)." },
+      },
+      required: ["orderId", "status"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "EditOrder",
+    description:
+      "Edit an existing order in the database. Use ONLY after confirming with the user which fields to update.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        payload: { type: "OBJECT", description: "The JSON payload for editing the order, including orderID." },
+      },
+      required: ["payload"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "DeleteOrder",
+    description:
+      "Delete an order created by the user by providing its order ID. Use this if the user explicitly asks to delete their order.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        orderId: { type: "NUMBER", description: "The unique identifier of the order to delete." },
+      },
+      required: ["orderId"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "CreateCustomer",
+    description:
+      "Create a new customer in the database. Use ONLY after the user provides full name, validated phone, and address.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        fullName: { type: "STRING", description: "The customer's full name." },
+        phone: {
+          type: "STRING",
+          description:
+            "The customer's validated 11-digit phone number (digits only). If missing, fallback to TEMP_PHONE_NUMBER env if set.",
+        },
+        address: { type: "STRING", description: "The customer's delivery address." },
+      },
+      required: ["fullName", "phone", "address"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "GetCategories",
+    description: "Fetch menu categories. Cached for session. Use for general suggestions or drink categories.",
+    parameters: { type: "OBJECT", properties: {}, required: [] },
+  });
+
+  functionDeclarations.push({
+    name: "GetCustomerById",
+    description:
+      "Get the customer details from the database by providing the customer ID. Use initially if a customer_id is available.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        customer_id: { type: "NUMBER", description: "The unique identifier of the customer." },
+      },
+      required: ["customer_id"],
+    },
+  });
+
+  functionDeclarations.push({
+    name: "ParseAndValidatePhoneNumber",
+    description:
+      "Parses and validates an Egyptian mobile phone number: removes non-digits; returns 11-digit number if valid; else Arabic error.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        phone_number: { type: "STRING", description: "The raw phone number string provided by the user." },
+      },
+      required: ["phone_number"],
+    },
+  });
+
+  // Group declarations into tools per API schema
+  return {
+    tools: [{ functionDeclarations }],
+    toolConfig: {
+      functionCallingConfig: {
+        mode: "ANY",
+        // Optionally constrain: allowedFunctionNames: functionDeclarations.map(d => d.name)
+      },
+    },
+  };
+}
+
+/**
  * Handles incoming client audio stream and manages communication with Gemini Live API.
  * Buffers audio chunks and sends fixed-size frames upstream; buffers downlink audio and
  * writes fixed-size frames downstream to the HTTP response.
@@ -202,7 +378,34 @@ const handleAudioStream = async (req, res) => {
       console.log(`Connecting to Gemini Live WS (explicit): ${urlWithKey}`);
       ws = new WebSocket(urlWithKey);
     } else {
-      session = await connectToGeminiSdk(sdkCallbacks);
+      const { tools, toolConfig } = buildFunctionTools();
+      // Append a hint for fallback phone usage to the system instruction if provided
+      const tempPhone = (process.env.TEMP_PHONE_NUMBER || "").trim();
+      if (tempPhone) {
+        process.env.GEMINI_INSTRUCTIONS = `${process.env.GEMINI_INSTRUCTIONS || "You are a helpful assistant and answer in a friendly tone."}\nIf a validated phone number is required and not provided, default to ${tempPhone}.`;
+      }
+
+      // Patch connectToGeminiSdk to accept tools via callbacks wrapper
+      const genai = await import("@google/genai");
+      const { GoogleGenAI, Modality } = genai;
+      const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+      const model = resolveLiveModel(process.env.GEMINI_MODEL);
+      console.log(`Using Gemini Live model: ${model}`);
+
+      const config = {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction:
+          process.env.GEMINI_INSTRUCTIONS ||
+          "You are a helpful assistant and answer in a friendly tone.",
+        ...tools,
+        ...toolConfig,
+      };
+
+      session = await client.live.connect({
+        model,
+        callbacks: sdkCallbacks,
+        config,
+      });
       console.log("Gemini Live session established via SDK");
       // Send brief silence to keep session open until audio arrives
       try {
