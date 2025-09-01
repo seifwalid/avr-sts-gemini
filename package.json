@@ -1,0 +1,24 @@
+{
+  "name": "avr-sts-gemini",
+  "version": "0.1.0",
+  "author": "Agent Voice Response <info@agentvoiceresponse.com>",
+  "description": "Gemini Live Speech-to-Speech service for Agent Voice Response",
+  "main": "index.js",
+  "scripts": {
+    "start": "node .",
+    "start:dev": "nodemon --inspect ./index.js",
+    "dc:build": "docker build --platform=linux/amd64 -t agentvoiceresponse/avr-sts-gemini:latest -t agentvoiceresponse/avr-sts-gemini:${npm_package_version} .",
+    "dc:push": "docker push agentvoiceresponse/avr-sts-gemini:latest && docker push agentvoiceresponse/avr-sts-gemini:${npm_package_version}"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "ws": "^8.18.2",
+    "@google/genai": "^0.9.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
+
+
